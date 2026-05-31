@@ -39,6 +39,31 @@
 		total: number;
 	};
 
+	type AccountOwnerAmount = {
+		name: string;
+		count: number;
+		total: number;
+	};
+
+	type AccountLineOwnerSummary = {
+		entries: AccountOwnerAmount[];
+		unknownCount: number;
+		unknownTotal: number;
+		display: string;
+	};
+
+	type OrderAttributionLine = {
+		code: string;
+		count: number;
+		name?: string;
+	};
+
+	type OrderAttribution = {
+		name?: string;
+		orderedAt: string;
+		lines: OrderAttributionLine[];
+	};
+
 	type ClientState = {
 		baseURL?: string;
 		nextId: string;
@@ -53,6 +78,7 @@
 		id: string;
 		state: ClientState & { baseURL: string };
 		cookies: [string, string][];
+		roomHash?: string;
 		createdAt: number;
 		updatedAt: number;
 	};
@@ -63,6 +89,7 @@
 		barcodeValue: string;
 		barcodeImageSrc?: string;
 		receiptShown: boolean;
+		orderAttributions?: OrderAttribution[];
 	};
 
 	type LookupItemResult = {
@@ -87,7 +114,7 @@
 		alcoholCheck?: number;
 	};
 
-	type ActiveTab = 'add' | 'cart' | 'history' | 'call' | 'checkout';
+	type ActiveTab = 'add' | 'cart' | 'history' | 'call';
 	type MenuStatus = 'unchecked' | 'loading' | 'available' | 'unavailable' | 'error';
 
 	const menuImageModules = import.meta.glob('../../../lib/assets/image/*.webp', {
@@ -139,6 +166,8 @@
 	let menuDetectionSeq = $state<Record<string, number>>({});
 	let currentMenuPeriod = $state(getMenuServicePeriod());
 	let localCart = $state<CartItem[]>([]);
+	let deviceToken = $state('');
+	let userName = $state('');
 	let selectedCategory = $state('すべて');
 	let search = $state('');
 	let manualCode = $state('');
@@ -146,6 +175,8 @@
 	let error = $state('');
 	let busy = $state(false);
 	let activeTab = $state<ActiveTab>('add');
+	let userNameDialogOpen = $state(false);
+	let userNameDraft = $state('');
 	let gachaDialogOpen = $state(false);
 	let gachaResults = $state<ExactBudgetSelection<MenuItem>[]>([]);
 	let gachaBudget = $state(1000);
@@ -155,6 +186,8 @@
 
 	const cartStorageKey = $derived(`betterzeriya:${sessionId}:cart`);
 	const officialSessionsStorageKey = 'betterzeriya:official-sessions';
+	const userNameStorageKey = 'betterzeriya:user-name';
+	const deviceTokenStorageKey = 'betterzeriya:device-token';
 	const serviceMenu = $derived(filterMenuForServicePeriod(menu, currentMenuPeriod));
 	const categories = $derived(['すべて', ...new Set(serviceMenu.map((item) => item.category))]);
 	const filteredMenu = $derived(
@@ -172,12 +205,18 @@
 	const canOrder = $derived(Boolean(clientState && totalCount > 0 && !busy));
 	const accountCount = $derived(checkout?.account.count ?? 0);
 	const accountTotal = $derived(checkout?.account.total ?? 0);
+	const accountLineOwnerSummaries = $derived(
+		checkout
+			? new Map(checkout.account.lines.map((line) => [line, summarizeAccountLineOwners(line)]))
+			: new Map<AccountLine, AccountLineOwnerSummary>()
+	);
+	const accountOwnerTotals = $derived(summarizeAccountOwners());
+	const displayUserName = $derived(userName);
 	const tabItems = $derived([
 		{ id: 'add' as const, label: '注文追加', icon: 'i-tabler-plus' },
 		{ id: 'cart' as const, label: '注文かご', icon: 'i-tabler-shopping-cart', count: totalCount },
-		{ id: 'history' as const, label: '注文履歴', icon: 'i-tabler-history' },
-		{ id: 'call' as const, label: '店員呼出', icon: 'i-tabler-bell' },
-		{ id: 'checkout' as const, label: '会計', icon: 'i-tabler-receipt' }
+		{ id: 'history' as const, label: '履歴・会計', icon: 'i-tabler-history' },
+		{ id: 'call' as const, label: '店員呼出', icon: 'i-tabler-bell' }
 	]);
 
 	const notify = (message: string) => {
@@ -208,6 +247,9 @@
 		const sessions = readOfficialSessions();
 		sessions[snapshot.id] = snapshot;
 		writeOfficialSessions(sessions);
+		if (userName && deviceToken) {
+			void publishDeviceName(userName);
+		}
 	};
 
 	const restoreOfficialSession = () => {
@@ -219,6 +261,50 @@
 		}
 		delete sessions[sessionId];
 		writeOfficialSessions(sessions);
+	};
+
+	const restoreUserName = () => {
+		userName = localStorage.getItem(userNameStorageKey)?.trim() ?? '';
+	};
+
+	const bytesToBase64Url = (bytes: Uint8Array) =>
+		btoa(String.fromCharCode(...bytes))
+			.replaceAll('+', '-')
+			.replaceAll('/', '_')
+			.replaceAll('=', '');
+
+	const createDeviceToken = () => {
+		const bytes = new Uint8Array(32);
+		crypto.getRandomValues(bytes);
+		return bytesToBase64Url(bytes);
+	};
+
+	const restoreDeviceToken = () => {
+		const saved = localStorage.getItem(deviceTokenStorageKey)?.trim();
+		if (saved) {
+			deviceToken = saved;
+			localStorage.setItem(deviceTokenStorageKey, saved);
+			return;
+		}
+		deviceToken = createDeviceToken();
+		localStorage.setItem(deviceTokenStorageKey, deviceToken);
+	};
+
+	const editUserName = () => {
+		userNameDraft = displayUserName;
+		userNameDialogOpen = true;
+	};
+
+	const saveUserName = async () => {
+		const nextName = userNameDraft.trim().slice(0, 40);
+		userName = nextName;
+		if (nextName) {
+			localStorage.setItem(userNameStorageKey, nextName);
+		} else {
+			localStorage.removeItem(userNameStorageKey);
+		}
+		userNameDialogOpen = false;
+		await publishDeviceName(nextName);
 	};
 
 	const statusLabel = (status: MenuStatus | undefined) => {
@@ -261,6 +347,19 @@
 			busy = false;
 		}
 	}
+
+	const publishDeviceName = async (name: string) => {
+		if (!deviceToken || !officialSession) {
+			return;
+		}
+		try {
+			await requestJSON<{ name: string }>(`/api/sessions/${sessionId}/name`, {
+				officialSession,
+				deviceToken,
+				name
+			});
+		} catch {}
+	};
 
 	const loadState = async () => {
 		try {
@@ -471,11 +570,19 @@
 		if (!canOrder) {
 			return;
 		}
+		if (!deviceToken) {
+			error = 'デバイス情報の準備中です。もう一度お試しください。';
+			return;
+		}
 		try {
-			const result = await requestJSON<{ state: ClientState }>(`/api/sessions/${sessionId}/submit`, {
-				officialSession,
-				cart: localCart.map((item) => ({ id: item.id, count: item.count }))
-			});
+			const result = await requestJSON<{ state: ClientState; orderAttributions?: OrderAttribution[] }>(
+				`/api/sessions/${sessionId}/submit`,
+				{
+					officialSession,
+					deviceToken,
+					cart: localCart.map((item) => ({ id: item.id, name: item.name, count: item.count }))
+				}
+			);
 			clientState = result.state;
 			commitCart([]);
 			activeTab = 'history';
@@ -493,6 +600,91 @@
 			clientState = result.state;
 			notify('注文履歴を更新しました');
 		} catch {}
+	};
+
+	function summarizeAccountLineOwners(line: AccountLine): AccountLineOwnerSummary {
+		const byName = new Map<string, number>();
+		const unitPrice = line.count > 0 ? Math.round(line.price / line.count) : 0;
+		let remaining = line.count;
+		let unknownCount = 0;
+		const orderAttributions = [...(checkout?.orderAttributions ?? [])].sort((left, right) =>
+			left.orderedAt.localeCompare(right.orderedAt)
+		);
+		for (const attribution of orderAttributions) {
+			if (remaining <= 0) {
+				continue;
+			}
+			for (const eventLine of attribution.lines) {
+				if (eventLine.name !== line.name || remaining <= 0) {
+					continue;
+				}
+				const count = Math.min(eventLine.count, remaining);
+				if (attribution.name) {
+					byName.set(attribution.name, (byName.get(attribution.name) ?? 0) + count);
+				} else {
+					unknownCount += count;
+				}
+				remaining -= count;
+			}
+		}
+		unknownCount += remaining;
+
+		const entries = [...byName.entries()].map(([name, count]) => ({
+			name,
+			count,
+			total: unitPrice * count
+		}));
+		const namedTotal = entries.reduce((sum, entry) => sum + entry.total, 0);
+		const unknownTotal = Math.max(0, line.price - namedTotal);
+		const displayParts = entries.map(
+			(entry) => `${entry.name} x${entry.count} (¥${entry.total.toLocaleString()})`
+		);
+		if (unknownCount > 0) {
+			displayParts.push(`不明 x${unknownCount} (¥${unknownTotal.toLocaleString()})`);
+		}
+
+		return {
+			entries,
+			unknownCount,
+			unknownTotal,
+			display: displayParts.join(' / ')
+		};
+	}
+
+	function summarizeAccountOwners() {
+		if (!checkout) {
+			return [];
+		}
+
+		const byName = new Map<string, AccountOwnerAmount>();
+		let unknownTotal = 0;
+		let unknownCount = 0;
+		for (const line of checkout.account.lines) {
+			const summary = accountLineOwnerSummaries.get(line) ?? summarizeAccountLineOwners(line);
+			for (const entry of summary.entries) {
+				const current = byName.get(entry.name);
+				if (current) {
+					current.count += entry.count;
+					current.total += entry.total;
+				} else {
+					byName.set(entry.name, { ...entry });
+				}
+			}
+			unknownCount += summary.unknownCount;
+			unknownTotal += summary.unknownTotal;
+		}
+
+		return [
+			...byName.values(),
+			...(unknownCount > 0 ? [{ name: '不明', count: unknownCount, total: unknownTotal }] : [])
+		];
+	}
+
+	const selectTab = async (tab: ActiveTab) => {
+		activeTab = tab;
+		if (tab === 'history' && clientState) {
+			await loadAccount();
+		}
 	};
 
 	const settleCheckout = async () => {
@@ -576,8 +768,13 @@
 	};
 
 	onMount(() => {
+		restoreUserName();
 		restoreOfficialSession();
 		restoreCart();
+		restoreDeviceToken();
+		if (userName) {
+			void publishDeviceName(userName);
+		}
 		void loadState();
 		const periodTimer = window.setInterval(() => {
 			currentMenuPeriod = getMenuServicePeriod();
@@ -585,7 +782,9 @@
 				selectedCategory = 'すべて';
 			}
 		}, 60_000);
-		return () => window.clearInterval(periodTimer);
+		return () => {
+			window.clearInterval(periodTimer);
+		};
 	});
 </script>
 
@@ -593,16 +792,17 @@
 	<title>注文 | Betterzeriya</title>
 </svelte:head>
 
-<main class="mx-auto grid w-[min(1180px,calc(100%_-_32px))] grid-cols-1 gap-y-0 px-4 pt-6 pb-28 text-slate-950 min-[901px]:w-[min(1240px,calc(100%_-_32px))] min-[901px]:grid-cols-[220px_minmax(0,1fr)] min-[901px]:gap-x-6 min-[901px]:pb-10">
+<main
+	class={activeTab === 'cart' || activeTab === 'history'
+		? 'mx-auto grid h-svh w-[min(1180px,calc(100%_-_32px))] grid-cols-1 grid-rows-[auto_minmax(0,1fr)] gap-y-0 overflow-hidden px-4 pt-6 pb-28 text-slate-950 min-[901px]:w-[min(1240px,calc(100%_-_32px))] min-[901px]:grid-cols-[220px_minmax(0,1fr)] min-[901px]:gap-x-6 min-[901px]:pb-6'
+		: 'mx-auto grid w-[min(1180px,calc(100%_-_32px))] grid-cols-1 gap-y-0 px-4 pt-6 pb-28 text-slate-950 min-[901px]:w-[min(1240px,calc(100%_-_32px))] min-[901px]:grid-cols-[220px_minmax(0,1fr)] min-[901px]:gap-x-6 min-[901px]:pb-10'}
+>
 	<header class="mb-5 grid items-center gap-3 min-[901px]:col-start-2 min-[561px]:grid-cols-[minmax(0,1fr)_auto_auto]">
-		<div>
-			<p class="m-0 mb-2 text-xs font-extrabold uppercase text-green-700">Order</p>
-			<h1 class="m-0 text-[22px] leading-tight font-extrabold tracking-normal">注文</h1>
-		</div>
+		<div></div>
 		{#if clientState}
-			<div class="flex flex-col gap-2 rounded-lg bg-green-50 p-3 text-green-800 min-[561px]:flex-row min-[561px]:items-center min-[561px]:justify-between">
+			<div class="text-gray-500 flex flex-col gap-2 rounded-lg p-3 min-[561px]:flex-row min-[561px]:items-center min-[561px]:justify-between">
 				<span>Shop {clientState.shopId}</span>
-				<strong>Table {clientState.tableNo}</strong>
+				<span>Table {clientState.tableNo}</span>
 				<span>{clientState.peopleCount} 名</span>
 			</div>
 		{/if}
@@ -619,7 +819,7 @@
 		<div class="fixed top-[max(16px,env(safe-area-inset-top))] right-[max(16px,env(safe-area-inset-right))] z-20 w-[min(360px,calc(100%_-_32px))] rounded-lg bg-slate-950 px-3.5 py-3 font-bold text-white shadow-[0_18px_50px_rgba(17,24,39,0.22)]" role="status">{toast}</div>
 	{/if}
 
-	<section class="min-w-0 min-[901px]:col-start-2">
+	<section class={activeTab === 'cart' || activeTab === 'history' ? 'flex min-h-0 min-w-0 flex-col min-[901px]:col-start-2' : 'min-w-0 min-[901px]:col-start-2'}>
 		{#if activeTab === 'add'}
 			<div class="min-w-0">
 				<div class="mb-3.5 flex flex-col gap-3 min-[561px]:flex-row min-[561px]:items-end min-[561px]:justify-between">
@@ -712,8 +912,8 @@
 				{/if}
 			</div>
 		{:else if activeTab === 'cart'}
-			<div class="rounded-lg border border-slate-900/10 bg-white/90 p-4 min-[901px]:sticky min-[901px]:top-3.5">
-				<div class="mb-3.5 flex items-end justify-between gap-4">
+			<div class="flex h-full min-h-0 flex-col rounded-lg border border-slate-900/10 bg-white/90 p-4">
+				<div class="mb-3.5 flex flex-none items-end justify-between gap-4">
 					<div>
 						<p class="m-0 mb-2 text-xs font-extrabold uppercase text-green-700">Cart</p>
 						<h2 class="m-0 text-[22px] leading-tight font-extrabold tracking-normal">注文かご</h2>
@@ -722,7 +922,7 @@
 				</div>
 
 				{#if localCart.length}
-					<div class="grid max-h-[360px] gap-2 overflow-auto pr-0.5">
+					<div class="grid min-h-0 flex-1 content-start gap-2 overflow-auto overscroll-contain pr-0.5">
 						{#each localCart as item, index}
 							<div class="grid grid-cols-[minmax(0,1fr)_104px_82px_36px] items-center gap-2.5 border-b border-slate-200 py-2.5 max-[560px]:grid-cols-[minmax(0,1fr)_96px_36px]">
 								<div>
@@ -772,52 +972,118 @@
 						{/each}
 					</div>
 				{:else}
-					<div class="grid gap-1.5 rounded-lg border border-dashed border-slate-300 p-5 text-slate-500">
+					<div class="grid min-h-0 flex-1 content-center gap-1.5 rounded-lg border border-dashed border-slate-300 p-5 text-slate-500">
 						<strong class="text-slate-950">まだ空です</strong>
 						<span>注文追加タブから 4 桁番号を入力して追加できます。</span>
 					</div>
 				{/if}
 
-				<div class="mt-[18px] mb-3 flex items-center justify-between border-t border-slate-200 pt-4">
-					<span>合計</span>
-					<strong class="text-3xl">¥{totalPrice.toLocaleString()}</strong>
-				</div>
+				<div class="mt-auto flex-none border-t border-slate-200 bg-white/90 pt-4">
+					<div class="mb-3 flex items-center justify-between">
+						<span>合計</span>
+						<strong class="text-3xl">¥{totalPrice.toLocaleString()}</strong>
+					</div>
 
-				<div class="grid grid-cols-2 gap-2.5">
-					<button class="min-h-11 rounded-lg border border-slate-300 bg-white px-4 font-extrabold text-slate-950" onclick={() => (activeTab = 'add')}>注文追加</button>
-					<button class="min-h-11 rounded-lg bg-slate-950 px-4 font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-55" onclick={submitOrder} disabled={!canOrder}>注文送信</button>
+					<div class="grid grid-cols-2 gap-2.5">
+						<button class="min-h-11 rounded-lg border border-slate-300 bg-white px-4 font-extrabold text-slate-950" onclick={() => (activeTab = 'add')}>注文追加</button>
+						<button class="min-h-11 rounded-lg bg-slate-950 px-4 font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-55" onclick={submitOrder} disabled={!canOrder}>注文送信</button>
+					</div>
 				</div>
 			</div>
 		{:else if activeTab === 'history'}
-			<div class="min-w-0 rounded-lg border border-slate-900/10 bg-white/90 p-[18px]">
-				<div class="mb-3 flex items-end justify-between gap-3">
+			<div class="flex h-full min-h-0 min-w-0 flex-col rounded-lg border-slate-900/10 bg-white/90 p-4">
+				<div class="mb-3 flex flex-none items-end justify-between gap-3">
 					<div>
 						<p class="m-0 mb-2 text-xs font-extrabold uppercase text-green-700">History</p>
-						<h2 class="m-0 text-[22px] leading-tight font-extrabold tracking-normal">注文履歴</h2>
+						<h2 class="m-0 text-[22px] leading-tight font-extrabold tracking-normal">履歴・会計</h2>
 					</div>
-					<strong class="text-[22px]">¥{accountTotal.toLocaleString()}</strong>
+					<div class="flex min-w-0 items-center gap-2">
+						<button
+							class="grid h-11 w-11 flex-none place-items-center rounded-lg border border-slate-300 bg-white text-xl text-slate-950 disabled:cursor-not-allowed disabled:opacity-55"
+							aria-label="履歴を更新"
+							title="履歴を更新"
+							onclick={loadAccount}
+							disabled={busy || !clientState}
+						>
+							<span class="i-tabler-refresh"></span>
+						</button>
+						<button
+							class="flex min-h-11 min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-slate-300 bg-white px-3 font-extrabold text-slate-950"
+							type="button"
+							onclick={editUserName}
+						>
+							<span class="i-tabler-user flex-none text-lg" aria-hidden="true"></span>
+							<span class="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">名前: {displayUserName || '未設定'}</span>
+							<span class="i-tabler-pencil flex-none text-lg" aria-hidden="true"></span>
+						</button>
+					</div>
 				</div>
 
-				<div class="grid grid-cols-2 gap-2.5">
-					<button class="min-h-11 rounded-lg border border-slate-300 bg-white px-4 font-extrabold text-slate-950 disabled:cursor-not-allowed disabled:opacity-55" onclick={loadAccount} disabled={busy || !clientState}>履歴を更新</button>
-				</div>
+				<div class="mt-3 min-h-0 flex-1 overflow-auto overscroll-contain pr-0.5">
+					{#if checkout && accountCount > 0}
+						<div class="grid gap-1.5">
+							{#each checkout.account.lines as line}
+								<div class="grid grid-cols-[minmax(0,1fr)_32px_76px] items-center gap-2 border-b border-slate-100 py-2 text-[13px]">
+									<span class="min-w-0 text-left">
+										<span class="block overflow-hidden text-ellipsis whitespace-nowrap">{line.name}</span>
+										{#if accountLineOwnerSummaries.get(line)?.display}
+											<span class="block overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-slate-600">{accountLineOwnerSummaries.get(line)?.display}</span>
+										{/if}
+									</span>
+									<span class="text-right">{line.count}</span>
+									<strong class="text-right">¥{line.price.toLocaleString()}</strong>
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<div class="grid min-h-full content-center gap-1.5 rounded-lg border border-dashed border-slate-300 p-4 text-slate-500">
+							<strong class="text-slate-950">履歴・会計はまだありません</strong>
+							<span>注文送信後にここへ反映されます。</span>
+						</div>
+					{/if}
 
-				{#if checkout && accountCount > 0}
-					<div class="mt-3 grid max-h-[220px] gap-1.5 overflow-auto">
-						{#each checkout.account.lines as line}
-							<div class="grid grid-cols-[minmax(0,1fr)_32px_76px] items-center gap-2 border-b border-slate-100 py-2 text-[13px]">
-								<span class="overflow-hidden text-ellipsis whitespace-nowrap text-left">{line.name}</span>
-								<span class="text-right">{line.count}</span>
-								<strong class="text-right">¥{line.price.toLocaleString()}</strong>
+					{#if checkout?.receiptShown}
+						<div class="my-3 grid gap-3 rounded-lg border border-green-200 bg-green-50 p-[18px] text-center text-green-950" aria-live="polite">
+							<div class="grid gap-1.5">
+								<span class="text-[13px] font-extrabold">Table {clientState?.tableNo}</span>
+								<strong class="[overflow-wrap:anywhere] text-[clamp(22px,6vw,40px)] tracking-normal">{checkout.barcodeValue}</strong>
 							</div>
-						{/each}
+							{#if checkout.barcodeImageSrc}
+								<img
+									class="mx-auto my-1 block h-[92px] w-[min(100%,420px)] border-[12px] border-white bg-white object-fill shadow-[inset_0_0_0_1px_rgba(17,24,39,0.08)]"
+									src={checkout.barcodeImageSrc}
+									alt={`会計バーコード ${checkout.barcodeValue}`}
+								/>
+							{/if}
+							<p class="m-0 font-extrabold">この画面をレジで提示してください。</p>
+						</div>
+					{/if}
+				</div>
+
+				<div class="mt-auto flex-none border-t border-slate-200 bg-white/90 pt-4">
+					{#if accountOwnerTotals.length > 0}
+						<div class="mb-3 flex flex-wrap gap-1.5 text-[12px] text-slate-700">
+							{#each accountOwnerTotals as owner}
+								<span class="rounded-full bg-slate-100 px-2.5 py-1 font-extrabold">
+									{owner.name} ¥{owner.total.toLocaleString()}
+								</span>
+							{/each}
+						</div>
+					{/if}
+					<div class="flex items-center justify-between">
+						<span>{accountCount} 点</span>
+						<strong class="text-3xl">¥{accountTotal.toLocaleString()}</strong>
 					</div>
-				{:else}
-					<div class="mt-3 grid gap-1.5 rounded-lg border border-dashed border-slate-300 p-4 text-slate-500">
-						<strong class="text-slate-950">注文履歴はまだありません</strong>
-						<span>注文送信後にここへ反映されます。</span>
-					</div>
-				{/if}
+					{#if !checkout?.receiptShown}
+						<button
+							class="mt-3 min-h-12 w-full rounded-lg bg-slate-950 px-4 text-[16px] font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-55"
+							onclick={settleCheckout}
+							disabled={busy || !clientState || accountCount === 0}
+						>
+							お会計する
+						</button>
+					{/if}
+				</div>
 			</div>
 		{:else if activeTab === 'call'}
 			<div class="grid min-h-80 justify-items-center gap-5 rounded-lg border border-slate-900/10 bg-white/90 p-[18px] text-center content-center">
@@ -834,73 +1100,11 @@
 					デザートを持ってきてもらう
 				</button>
 			</div>
-		{:else}
-			<div class="min-w-0 rounded-lg border border-slate-900/10 bg-white/90 p-4">
-				<div class="mb-3 flex items-end justify-between gap-3">
-					<div>
-						<p class="m-0 mb-2 text-xs font-extrabold uppercase text-green-700">Checkout</p>
-						<h2 class="m-0 text-[22px] leading-tight font-extrabold tracking-normal">会計</h2>
-					</div>
-					<strong class="text-[22px]">¥{accountTotal.toLocaleString()}</strong>
-				</div>
-
-				{#if checkout?.receiptShown}
-					<div class="my-3 grid gap-3 rounded-lg border border-green-200 bg-green-50 p-[18px] text-center text-green-950" aria-live="polite">
-						<div class="grid gap-1.5">
-							<span class="text-[13px] font-extrabold">Table {clientState?.tableNo}</span>
-							<strong class="[overflow-wrap:anywhere] text-[clamp(22px,6vw,40px)] tracking-normal">{checkout.barcodeValue}</strong>
-						</div>
-						{#if checkout.barcodeImageSrc}
-							<img
-								class="mx-auto my-1 block h-[92px] w-[min(100%,420px)] border-[12px] border-white bg-white object-fill shadow-[inset_0_0_0_1px_rgba(17,24,39,0.08)]"
-								src={checkout.barcodeImageSrc}
-								alt={`会計バーコード ${checkout.barcodeValue}`}
-							/>
-						{/if}
-						<p class="m-0 font-extrabold">この画面をレジで提示してください。</p>
-					</div>
-				{:else}
-					<div class="grid grid-cols-2 gap-2.5">
-						<button class="min-h-11 rounded-lg border border-slate-300 bg-white px-4 font-extrabold text-slate-950 disabled:cursor-not-allowed disabled:opacity-55" onclick={loadAccount} disabled={busy || !clientState}>
-							明細を更新
-						</button>
-						<button
-							class="min-h-11 rounded-lg bg-slate-950 px-4 font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-55"
-							onclick={settleCheckout}
-							disabled={busy || !clientState || accountCount === 0}
-						>
-							お会計する
-						</button>
-					</div>
-				{/if}
-
-				{#if checkout && accountCount > 0}
-					<div class="mt-3 grid max-h-80 gap-1.5 overflow-auto">
-						{#each checkout.account.lines as line}
-							<div class="grid grid-cols-[minmax(0,1fr)_32px_76px] items-center gap-2 border-b border-slate-100 py-2 text-[13px]">
-								<span class="overflow-hidden text-ellipsis whitespace-nowrap text-left">{line.name}</span>
-								<span class="text-right">{line.count}</span>
-								<strong class="text-right">¥{line.price.toLocaleString()}</strong>
-							</div>
-						{/each}
-					</div>
-				{:else}
-					<div class="mt-3 grid gap-1.5 rounded-lg border border-dashed border-slate-300 p-4 text-slate-500">
-						<strong class="text-slate-950">会計できる注文がありません</strong>
-						<span>注文を送信すると、ここで明細確認と会計確定ができます。</span>
-					</div>
-				{/if}
-
-				<div class="mt-[18px] mb-0 flex items-center justify-between border-t border-slate-200 pt-4">
-					<span>{accountCount} 点</span>
-					<strong class="text-3xl">¥{accountTotal.toLocaleString()}</strong>
-				</div>
-			</div>
 		{/if}
 	</section>
 
 	<nav
-		class="fixed right-0 bottom-0 left-0 z-20 grid grid-cols-5 gap-1 border-t border-slate-900/10 bg-white/95 px-[max(8px,env(safe-area-inset-left))] pt-2 pb-[max(8px,env(safe-area-inset-bottom))] backdrop-blur-2xl min-[901px]:sticky min-[901px]:top-6 min-[901px]:right-auto min-[901px]:bottom-auto min-[901px]:left-auto min-[901px]:col-start-1 min-[901px]:row-start-1 min-[901px]:row-span-4 min-[901px]:flex min-[901px]:min-h-[calc(100svh-48px)] min-[901px]:flex-col min-[901px]:self-start min-[901px]:border-t-0 min-[901px]:border-r min-[901px]:bg-transparent min-[901px]:p-0 min-[901px]:pr-3.5 min-[901px]:backdrop-blur-none"
+		class="fixed right-0 bottom-0 left-0 z-20 grid grid-cols-4 gap-1 border-t border-slate-900/10 bg-white/95 px-[max(8px,env(safe-area-inset-left))] pt-2 pb-[max(8px,env(safe-area-inset-bottom))] backdrop-blur-2xl min-[901px]:sticky min-[901px]:top-6 min-[901px]:right-auto min-[901px]:bottom-auto min-[901px]:left-auto min-[901px]:col-start-1 min-[901px]:row-start-1 min-[901px]:row-span-4 min-[901px]:flex min-[901px]:min-h-[calc(100svh-48px)] min-[901px]:flex-col min-[901px]:self-start min-[901px]:border-t-0 min-[901px]:border-r min-[901px]:bg-transparent min-[901px]:p-0 min-[901px]:pr-3.5 min-[901px]:backdrop-blur-none"
 		aria-label="注文ナビゲーション"
 	>
 		{#each tabItems as tab}
@@ -908,7 +1112,7 @@
 				class={activeTab === tab.id
 					? 'relative flex min-h-[54px] flex-col items-center justify-center gap-1 rounded-lg bg-slate-950 p-1 text-center text-[11px] font-extrabold text-white min-[901px]:min-h-[46px] min-[901px]:w-full min-[901px]:flex-row min-[901px]:justify-start min-[901px]:gap-3 min-[901px]:rounded-full min-[901px]:px-4 min-[901px]:text-left min-[901px]:text-sm'
 					: 'relative flex min-h-[54px] flex-col items-center justify-center gap-1 rounded-lg p-1 text-center text-[11px] font-extrabold text-slate-700 transition hover:bg-slate-950 hover:text-white min-[901px]:min-h-[46px] min-[901px]:w-full min-[901px]:flex-row min-[901px]:justify-start min-[901px]:gap-3 min-[901px]:rounded-full min-[901px]:px-4 min-[901px]:text-left min-[901px]:text-sm'}
-				onclick={() => (activeTab = tab.id)}
+				onclick={() => selectTab(tab.id)}
 			>
 				<span class={`${tab.icon} text-[22px]`} aria-hidden="true"></span>
 				<span>{tab.label}</span>
@@ -919,6 +1123,25 @@
 		{/each}
 	</nav>
 </main>
+
+<AppDialog bind:open={userNameDialogOpen} eyebrow="Name" title="名前を変更">
+	<form class="grid gap-4" onsubmit={(event) => { event.preventDefault(); void saveUserName(); }}>
+		<label class="grid gap-1.5">
+			<span class="text-xs font-bold text-slate-500">名前</span>
+			<input
+				class="min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-slate-950 outline-none focus:border-slate-950 focus:ring-4 focus:ring-slate-950/10"
+				bind:value={userNameDraft}
+				maxlength="40"
+				placeholder="名前を入力"
+				autocomplete="name"
+			/>
+		</label>
+		<div class="grid grid-cols-2 gap-2.5">
+			<button class="min-h-11 rounded-lg border border-slate-300 bg-white px-4 font-extrabold text-slate-950" type="button" onclick={() => (userNameDialogOpen = false)}>キャンセル</button>
+			<button class="min-h-11 rounded-lg bg-slate-950 px-4 font-extrabold text-white" type="submit">保存</button>
+		</div>
+	</form>
+</AppDialog>
 
 <AppDialog bind:open={gachaDialogOpen} eyebrow="Gacha" title={`${gachaBudget}円ガチャ結果`}>
 	<form class="grid gap-3" onsubmit={(event) => event.preventDefault()}>

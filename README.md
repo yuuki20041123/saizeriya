@@ -134,20 +134,6 @@ bun run betterzeriya:build:pages
 bun run --cwd apps/betterzeriya preview:pages
 ```
 
-#### Via Git integration (Cloudflare dashboard)
-
-Connect this repository on the Cloudflare Pages dashboard and use the following settings:
-
-| Field                  | Value                                             |
-| ---------------------- | ------------------------------------------------- |
-| Framework preset       | SvelteKit                                         |
-| Build command          | `bun install && bun run betterzeriya:build:pages` |
-| Build output directory | `apps/betterzeriya/.svelte-kit/cloudflare`        |
-| Root directory         | `/` (repository root)                             |
-| Environment variables  | `CLOUDFLARE=1`, `BUN_VERSION=1.3.10`              |
-
-`BUN_VERSION` makes the Cloudflare build environment install bun. `bun install` must be run explicitly in the build command — Cloudflare does not auto-install dependencies for bun projects, and npm cannot resolve the `workspace:*` protocol used by this monorepo.
-
 ### Deploy to Vercel
 
 Use the repository root as the Vercel project root. The included `vercel.json`

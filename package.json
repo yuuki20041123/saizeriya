@@ -7,11 +7,11 @@
   ],
   "type": "module",
   "scripts": {
-    "dev": "cd packages/server && bun --watch src/main.ts",
+    "dev": "vp run -w betterzeriya:dev",
     "dev:app": "bun run --cwd apps/betterzeriya dev",
+    "dev:app-server": "bun run --cwd apps/betterzeriya-server dev",
     "betterzeriya:build": "bun run --cwd packages/client build && bun run --cwd apps/betterzeriya build",
-    "betterzeriya:build:pages": "bun run --cwd packages/client build && bun run --cwd apps/betterzeriya build:pages",
-    "betterzeriya:deploy:pages": "bun run betterzeriya:build:pages && bun run --cwd apps/betterzeriya deploy:pages",
+    "betterzeriya:build:node": "bun run --cwd packages/client build && NODE=1 bun run --cwd apps/betterzeriya",
     "betterzeriya:build:vercel": "bun run --cwd packages/client build && cd apps/betterzeriya && VERCEL=1 bun run build && mkdir -p ../../.vercel && rm -rf ../../.vercel/output && cp -R .vercel/output ../../.vercel/output",
     "betterzeriya:start": "node apps/betterzeriya/build",
     "build": "bun run betterzeriya:build",
@@ -34,5 +34,6 @@
   },
   "peerDependencies": {
     "typescript": "^5"
-  }
+  },
+  "packageManager": "bun@1.3.14"
 }

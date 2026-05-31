@@ -22,6 +22,7 @@
 		id: string;
 		state: ClientState & { baseURL: string };
 		cookies: [string, string][];
+		roomHash?: string;
 		createdAt: number;
 		updatedAt: number;
 	};

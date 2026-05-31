@@ -1,0 +1,22 @@
+{
+  "name": "betterzeriya-server",
+  "type": "module",
+  "imports": {
+    "#*": "./*"
+  },
+  "scripts": {
+    "build": "nitro build",
+    "dev": "PORT=3001 nitro dev",
+    "preview": "nitro preview"
+  },
+  "dependencies": {
+    "db0": "latest",
+    "saizeriya.js": "workspace:*",
+    "unstorage": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "nitro": "latest",
+    "typescript": "latest"
+  }
+}

@@ -4,6 +4,7 @@ WORKDIR /app
 
 COPY package.json bun.lock ./
 COPY apps/betterzeriya/package.json apps/betterzeriya/package.json
+COPY apps/betterzeriya-server/package.json apps/betterzeriya-server/package.json
 COPY packages/client/package.json packages/client/package.json
 COPY packages/server/package.json packages/server/package.json
 
@@ -15,6 +16,7 @@ COPY . .
 
 RUN bun run --cwd packages/client build
 RUN bun run --cwd apps/betterzeriya build
+RUN cd apps/betterzeriya-server && NODE=1 NITRO_PRESET=node-server bun nitro build
 
 FROM node:24-alpine AS runtime
 
@@ -24,8 +26,10 @@ ENV PORT=3000
 
 WORKDIR /app
 
-COPY --from=build /app/apps/betterzeriya/build ./build
+COPY --from=build /app/apps/betterzeriya/build ./betterzeriya-build
+COPY --from=build /app/apps/betterzeriya-server/.output ./betterzeriya-server-output
+COPY apps/betterzeriya-server/docker-entry.mjs ./docker-entry.mjs
 
 EXPOSE 3000
 
-CMD ["node", "build"]
+CMD ["node", "docker-entry.mjs"]

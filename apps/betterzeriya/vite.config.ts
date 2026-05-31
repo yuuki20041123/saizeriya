@@ -7,6 +7,13 @@ export default defineConfig(({ mode }) => ({
   plugins: [tailwindcss(), sveltekit()],
   server: {
     allowedHosts: true,
+    proxy: {
+      '/api': {
+        target: process.env.BETTERZERIYA_SERVER_ORIGIN ?? 'http://127.0.0.1:3001',
+        changeOrigin: true,
+        ws: true,
+      },
+    },
   },
   resolve:
     mode === 'production'

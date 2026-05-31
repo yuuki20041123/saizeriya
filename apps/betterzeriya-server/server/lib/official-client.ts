@@ -4,7 +4,7 @@ import {
   type ClientState,
   type LookupItemResult,
 } from 'saizeriya.js'
-import { env } from '$env/dynamic/private'
+import { hashInitialURL } from './crypto.ts'
 
 type OfficialClient = Awaited<ReturnType<typeof createClient>>
 type BrowserOfficialClient = Awaited<
@@ -31,6 +31,7 @@ export interface OfficialSessionSnapshot {
   id: string
   state: ClientState
   cookies: CookieEntry[]
+  roomHash?: string
   mode?: 'fetch' | 'browser'
   createdAt: number
   updatedAt: number
@@ -38,6 +39,7 @@ export interface OfficialSessionSnapshot {
 
 interface BrowserSessionRecord {
   client: BrowserOfficialClient
+  roomHash: string
   close?: () => Promise<void>
   createdAt: number
   updatedAt: number
@@ -45,10 +47,10 @@ interface BrowserSessionRecord {
 
 const browserSessions = new Map<string, BrowserSessionRecord>()
 const sessionTtlMs = 1000 * 60 * 60 * 6
-const useBrowserMode = () => env.BROWSER === '1'
+const useBrowserMode = () => process.env.BROWSER === '1'
 const browserLaunchOptions = () => ({
   headless: true,
-  ...(env.CHROME_EXECUTABLE ? { executablePath: env.CHROME_EXECUTABLE } : {}),
+  ...(process.env.CHROME_EXECUTABLE ? { executablePath: process.env.CHROME_EXECUTABLE } : {}),
 })
 
 const pruneSessions = () => {
@@ -110,6 +112,7 @@ export const createOfficialSession = async (qrURLSource: string) => {
   pruneSessions()
   const id = crypto.randomUUID()
   const now = Date.now()
+  const roomHash = await hashInitialURL(qrURLSource)
 
   if (useBrowserMode()) {
     const { createBrowserClient } = await import('saizeriya.js/browser-mode')
@@ -119,6 +122,7 @@ export const createOfficialSession = async (qrURLSource: string) => {
     })
     const session: BrowserSessionRecord = {
       client,
+      roomHash,
       close: () => client.close(),
       createdAt: now,
       updatedAt: now,
@@ -127,7 +131,7 @@ export const createOfficialSession = async (qrURLSource: string) => {
     return {
       id,
       state: client.getState(),
-      officialSession: createSnapshot(id, client, [], now, 'browser'),
+      officialSession: createSnapshot(id, client, [], now, 'browser', roomHash),
     }
   }
 
@@ -139,7 +143,7 @@ export const createOfficialSession = async (qrURLSource: string) => {
   return {
     id,
     state: client.getState(),
-    officialSession: createSnapshot(id, client, cookieFetch.getCookies(), now, 'fetch'),
+    officialSession: createSnapshot(id, client, cookieFetch.getCookies(), now, 'fetch', roomHash),
   }
 }
 
@@ -158,10 +162,12 @@ const createSnapshot = (
   cookies: CookieEntry[],
   createdAt = Date.now(),
   mode: 'fetch' | 'browser' = 'fetch',
+  roomHash?: string,
 ): OfficialSessionSnapshot => ({
   id,
   state: client.getState(),
   cookies,
+  ...(roomHash ? { roomHash } : {}),
   mode,
   createdAt,
   updatedAt: Date.now(),
@@ -185,7 +191,8 @@ const createClientFromSnapshot = async (id: string, snapshot?: OfficialSessionSn
     const session = getBrowserSession(id)
     return {
       client: session.client,
-      getSnapshot: () => createSnapshot(id, session.client, [], session.createdAt, 'browser'),
+      getSnapshot: () =>
+        createSnapshot(id, session.client, [], session.createdAt, 'browser', session.roomHash),
     }
   }
 
@@ -201,7 +208,14 @@ const createClientFromSnapshot = async (id: string, snapshot?: OfficialSessionSn
   return {
     client,
     getSnapshot: () =>
-      createSnapshot(id, client, cookieFetch.getCookies(), snapshot.createdAt, 'fetch'),
+      createSnapshot(
+        id,
+        client,
+        cookieFetch.getCookies(),
+        snapshot.createdAt,
+        'fetch',
+        snapshot.roomHash,
+      ),
   }
 }
 

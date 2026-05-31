@@ -5,9 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "dev:browser": "BROWSER=1 vite dev",
     "build": "vite build",
-    "build:browser": "BROWSER=1 vite build",
     "preview": "vite preview",
     "preview:pages": "wrangler pages dev .svelte-kit/cloudflare",
     "deploy:pages": "wrangler pages deploy .svelte-kit/cloudflare",
