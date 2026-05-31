@@ -1,10 +1,21 @@
 import http from 'node:http'
 import net from 'node:net'
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+
+const firstExisting = (...paths) => paths.find((path) => existsSync(path)) ?? paths[0]
 
 const publicPort = Number(process.env.PORT ?? 3000)
 const sveltePort = Number(process.env.SVELTE_PORT ?? 3001)
 const apiPort = Number(process.env.API_PORT ?? 3002)
+const svelteEntry =
+  process.env.SVELTE_ENTRY ?? firstExisting('betterzeriya-build', 'apps/betterzeriya/build')
+const apiEntry =
+  process.env.API_ENTRY ??
+  firstExisting(
+    'betterzeriya-server-output/server/index.mjs',
+    'apps/betterzeriya-server/.output/server/index.mjs',
+  )
 
 const start = (name, command, args, env) => {
   const child = spawn(command, args, {
@@ -61,11 +72,11 @@ const proxyUpgrade = (targetPort, request, socket, head) => {
   upstream.on('error', () => socket.destroy())
 }
 
-start('betterzeriya', 'node', ['betterzeriya-build'], {
+start('betterzeriya', 'node', [svelteEntry], {
   HOST: '127.0.0.1',
   PORT: String(sveltePort),
 })
-start('betterzeriya-server', 'node', ['betterzeriya-server-output/server/index.mjs'], {
+start('betterzeriya-server', 'node', [apiEntry], {
   HOST: '127.0.0.1',
   PORT: String(apiPort),
 })
